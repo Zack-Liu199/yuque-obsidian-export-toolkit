@@ -1,0 +1,248 @@
+diff -ruN _tmp_yuque_exporter/src/lib/builder.ts patched_yuque_exporter/src/lib/builder.ts
+--- _tmp_yuque_exporter/src/lib/builder.ts	2026-03-28 15:44:31
++++ patched_yuque_exporter/src/lib/builder.ts	2026-03-28 15:46:45
+@@ -7,17 +7,15 @@
+ import { buildDoc } from './doc.js';
+ import { buildTree } from './tree.js';
+ import { config } from '../config.js';
+-const { outputDir, metaDir } = config;
+ 
+-const taskQueue = new PQueue({ concurrency: 10 });
+-
+ // TODO: support inputs so only build the specified repos
+ export async function build() {
+   logger.info('Start building...');
++  const taskQueue = new PQueue({ concurrency: 10 });
+ 
+   const repos = await listRepos();
+   if (repos.length === 0) {
+-    logger.warn(`No repos found at ${metaDir}`);
++    logger.warn(`No repos found at ${config.metaDir}`);
+     return;
+   }
+ 
+@@ -27,7 +25,7 @@
+   // travel tree to build docs
+   const tasks: (() => Promise<void>)[] = [];
+   for (const { node } of tree) {
+-    const fullPath = path.join(outputDir, node.filePath);
++    const fullPath = path.join(config.outputDir, node.filePath);
+     logger.success(fullPath);
+ 
+     switch (node.type) {
+@@ -48,7 +46,7 @@
+         tasks.push(async () => {
+           const doc = await buildDoc(node, tree.docs);
+           if (doc !== null) {
+-            const fullPath = path.join(outputDir, `${doc.filePath}.md`);
++            const fullPath = path.join(config.outputDir, `${doc.filePath}.md`);
+             logger.success(`Building doc: ${fullPath}`);
+             await writeFile(fullPath, doc.content);
+           }
+@@ -67,9 +65,9 @@
+ 
+ async function listRepos(): Promise<Repository[]> {
+   const repos = [];
+-  const reposPath = await fg('**/repo.json', { cwd: metaDir, deep: 3 });
++  const reposPath = await fg('**/repo.json', { cwd: config.metaDir, deep: 3 });
+   for (const repoPath of reposPath) {
+-    const repoInfo: Repository = await readJSON(path.join(metaDir, repoPath));
++    const repoInfo: Repository = await readJSON(path.join(config.metaDir, repoPath));
+     if (repoInfo.type === 'Book') {
+       repos.push(repoInfo);
+     }
+diff -ruN _tmp_yuque_exporter/src/lib/crawler.ts patched_yuque_exporter/src/lib/crawler.ts
+--- _tmp_yuque_exporter/src/lib/crawler.ts	2026-03-28 15:44:31
++++ patched_yuque_exporter/src/lib/crawler.ts	2026-03-28 15:46:45
+@@ -6,14 +6,19 @@
+ import { SDK } from './sdk.js';
+ import { logger, writeFile, rm, readJSON } from './utils.js';
+ import { config } from '../config.js';
+-const { host, token, userAgent, clean, metaDir } = config;
+ 
+-const sdk = new SDK({ token, host, userAgent });
+-const taskQueue = new PQueue({ concurrency: 10 });
++function createSDK() {
++  return new SDK({ token: config.token, host: config.host, userAgent: config.userAgent });
++}
+ 
++function createTaskQueue() {
++  return new PQueue({ concurrency: 10 });
++}
++
+ export async function crawl(inputs?: string[]) {
+   logger.info('Start crawling...');
+-  if (clean) await rm(metaDir);
++  if (config.clean) await rm(config.metaDir);
++  const sdk = createSDK();
+ 
+   // if inputs is empty, crawl all repos of the user which associated with the token
+   if (!inputs || inputs.length === 0) inputs = [ '' ];
+@@ -52,12 +57,13 @@
+ }
+ 
+ export async function crawlRepo(namespace: string) {
++  const sdk = createSDK();
++  const taskQueue = createTaskQueue();
+   // crawl repo detail/docs/toc
+-  logger.success(`Crawling repo detail: ${host}/${namespace}`);
++  logger.success(`Crawling repo detail: ${config.host}/${namespace}`);
+   const repo = await sdk.getRepoDetail(namespace);
+   const toc = yaml.parse(repo.toc_yml);
+   const docList = await sdk.getDocs(namespace);
+-  const docsPublishedAtKey = 'docs-published-at';
+ 
+   await saveToStorage(`${namespace}/repo.json`, repo);
+   await saveToStorage(`${namespace}/toc.json`, toc);
+@@ -67,16 +73,15 @@
+   ));
+ 
+   // crawl repo docs
+-  const docsPublishedAtPath = await fg('**/docs-published-at.json', { cwd: metaDir, deep: 3 });
+-  const docsPublishedAtMap: Record<number, string> = await readJSON(path.join(metaDir, docsPublishedAtPath[0]));
+-  // throw new Error(JSON.stringify(docsPublishedAtMap));
++  const docsPublishedAtPath = path.join(config.metaDir, namespace, 'docs-published-at.json');
++  const docsPublishedAtMap: Record<number, string> = await readJSON(docsPublishedAtPath);
+   const docChangedList = docList
+     .filter(doc => typeof docsPublishedAtMap[doc.id] === 'undefined' || docsPublishedAtMap[doc.id] !== doc.published_at);
+   let docs = [];
+   if (docChangedList.length) {
+     docs = await taskQueue.addAll(docChangedList.map(doc => {
+       return async () => {
+-        logger.success(` - [${doc.title}](${host}/${namespace}/${doc.slug})`);
++        logger.success(` - [${doc.title}](${config.host}/${namespace}/${doc.slug})`);
+         const docDetail = await sdk.getDocDetail(namespace, doc.slug);
+         await saveToStorage(`${namespace}/docs/${doc.slug}.json`, docDetail);
+       };
+@@ -91,5 +96,5 @@
+ }
+ 
+ async function saveToStorage(filePath: string, content) {
+-  await writeFile(path.join(metaDir, filePath), content);
++  await writeFile(path.join(config.metaDir, filePath), content);
+ }
+diff -ruN _tmp_yuque_exporter/src/lib/doc.ts patched_yuque_exporter/src/lib/doc.ts
+--- _tmp_yuque_exporter/src/lib/doc.ts	2026-03-28 15:44:31
++++ patched_yuque_exporter/src/lib/doc.ts	2026-03-28 15:46:45
+@@ -10,20 +10,13 @@
+ import { readJSON, download, getRedirectLink } from './utils.js';
+ import { config } from '../config.js';
+ 
+-const { host, metaDir, outputDir, userAgent } = config;
+-const docsPublishedAtPath = await fg('**/docs-published-at.json', { cwd: metaDir, deep: 3 });
+-const docsPublishedAtMap = await readJSON(path.join(metaDir, docsPublishedAtPath[0]));
+-
+ interface Options {
+   doc: TreeNode;
+   mapping: Record<string, TreeNode>;
+ }
+ 
+ export async function buildDoc(doc: TreeNode, mapping: Record<string, TreeNode>) {
+-  const docDetail = await readJSON(path.join(metaDir, doc.namespace, 'docs', `${doc.url}.json`));
+-  if (typeof docsPublishedAtMap[docDetail.id] !== 'undefined' && docsPublishedAtMap[docDetail.id] === docDetail.published_at) {
+-    return null;
+-  }
++  const docDetail = await readJSON(path.join(config.metaDir, doc.namespace, 'docs', `${doc.url}.json`));
+   const content = await remark()
+     .data('settings', { bullet: '-', listItemIndent: 'one' })
+     .use([
+@@ -44,7 +37,7 @@
+ function frontmatter(doc) {
+   const frontMatter = yaml.stringify({
+     title: doc.title,
+-    url: `${host}/${doc.namespace}/${doc.url}`,
++    url: `${config.host}/${doc.namespace}/${doc.url}`,
+     // slug: doc.slug,
+     // public: doc.public,
+     // status: doc.status,
+@@ -72,8 +65,8 @@
+       if (!isYuqueDocLink(node.url)) continue;
+ 
+       // 语雀分享链接功能已下线，替换为 302 后的地址
+-      if (node.url.startsWith(`${host}/docs/share/`)) {
+-        node.url = await getRedirectLink(node.url, host);
++      if (node.url.startsWith(`${config.host}/docs/share/`)) {
++        node.url = await getRedirectLink(node.url, config.host);
+       }
+ 
+       // 语雀链接有多种显示方式，其中一种会插入该参数，会导致点击后的页面缺少头部导航
+@@ -92,8 +85,8 @@
+ 
+ function isYuqueDocLink(url?: string) {
+   if (!url) return false;
+-  if (!url.startsWith(host)) return false;
+-  if (url.startsWith(host + '/attachments/')) return false;
++  if (!url.startsWith(config.host)) return false;
++  if (url.startsWith(config.host + '/attachments/')) return false;
+   return true;
+ }
+ 
+@@ -108,7 +101,7 @@
+     for (const node of assetNodes) {
+       const assetName = `${opts.doc.url}/${new URL(node.url).pathname.split('/').pop()}`;
+       const filePath = path.join(assetsDir, assetName);
+-      await download(node.url, path.join(outputDir, filePath), { headers: { 'User-Agent': userAgent } });
++      await download(node.url, path.join(config.outputDir, filePath), { headers: { 'User-Agent': config.userAgent } });
+       node.url = path.relative(path.dirname(docFilePath), filePath);
+     }
+   };
+diff -ruN _tmp_yuque_exporter/src/lib/sdk.ts patched_yuque_exporter/src/lib/sdk.ts
+--- _tmp_yuque_exporter/src/lib/sdk.ts	2026-03-28 15:44:31
++++ patched_yuque_exporter/src/lib/sdk.ts	2026-03-28 15:46:45
+@@ -88,6 +88,12 @@
+   data?: T;
+   message?: string;
+   code?: number;
++  meta?: {
++    current_page?: number;
++    per_page?: number;
++    total_count?: number;
++    total_page?: number;
++  };
+ }
+ 
+ export class SDK {
+@@ -116,7 +122,20 @@
+   }
+ 
+   async getDocs(namespace: string) {
+-    return await this.requestAPI<Doc[]>(`repos/${namespace}/docs`);
++    const docs: Doc[] = [];
++    let page = 1;
++
++    while (true) {
++      const response = await this.request<Doc[]>(`repos/${namespace}/docs?page=${page}`);
++      const batch = response.data || [];
++      docs.push(...batch);
++
++      const totalPage = response.meta?.total_page || 1;
++      if (page >= totalPage || batch.length === 0) break;
++      page += 1;
++    }
++
++    return docs;
+   }
+ 
+   async getDocDetail(namespace: string, slug: string) {
+diff -ruN _tmp_yuque_exporter/src/lib/tree.ts patched_yuque_exporter/src/lib/tree.ts
+--- _tmp_yuque_exporter/src/lib/tree.ts	2026-03-28 15:44:31
++++ patched_yuque_exporter/src/lib/tree.ts	2026-03-28 15:46:45
+@@ -7,7 +7,6 @@
+ import type { Doc, Repository, TocInfo, TreeNode } from './types';
+ import { readJSON } from './utils.js';
+ import { config } from '../config.js';
+-const { metaDir } = config;
+ 
+ interface TravelResult {
+   node: TreeNode;
+@@ -88,8 +87,8 @@
+     children: [],
+   };
+ 
+-  const docs: Doc[] = await readJSON(path.join(metaDir, repo.namespace, 'docs.json'));
+-  const toc: TocInfo[] = await readJSON(path.join(metaDir, repo.namespace, 'toc.json'));
++  const docs: Doc[] = await readJSON(path.join(config.metaDir, repo.namespace, 'docs.json'));
++  const toc: TocInfo[] = await readJSON(path.join(config.metaDir, repo.namespace, 'toc.json'));
+ 
+   // collect toc items
+   const tocList = toc
