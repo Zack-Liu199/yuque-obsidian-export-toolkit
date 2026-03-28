@@ -2,11 +2,6 @@
 
 一套面向 **语雀 → Obsidian** 的导出工具包。
 
-这个目录专门为后续单独提交到 GitHub 做了整理，目标是：
-
-- 把当前项目里已经验证可用的方法单独收敛出来
-- 把“自研脚本”和“引用的第三方工具”分开摆放
-- 让后续维护、开源说明、License 标注更清晰
 
 ## 1. 目录结构
 
@@ -157,18 +152,3 @@ python3 ./scripts/export_lakesheet_xlsx.py \
 - `yuque/yuque-mcp-server`
   - 作为参考工具记录
   - 本项目当前不依赖它执行批量导出
-
-## 7. 开源建议
-
-如果你后续把这个目录单独提交到 GitHub，建议：
-
-- 仓库只提交这个目录内容
-- 不提交你的 `exported-vaults/`
-- 不提交真实 `YUQUE_TOKEN`
-- 如果 Token 曾经暴露过，先去语雀后台轮换
-
-## 8. License 与归属
-
-- `scripts/` 下是当前项目整理出的本地脚本
-- `third_party/` 下保留的是第三方来源说明、License 和补丁记录
-- 提交到 GitHub 前，建议再补一版你自己的仓库 License
